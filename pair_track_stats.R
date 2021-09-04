@@ -1,10 +1,10 @@
 # This script works on development of a tool fo detecting possible double events
 # characterized by a parallel run of their tracks
 
-  library(tidyverse)
-  library(furrr)
-  library(stringi)
-  library(ggrepel)
+  require(tidyverse)
+  require(furrr)
+  require(stringi)
+  require(ggrepel)
 
 # helper functions -----
   
@@ -146,6 +146,28 @@
     
   }
   
+  plot_pair_ <- function(pair_stat_object, track_pair, ...) {
+    
+    ## plots distances for the cell pair
+    
+    ## retrieving the distances for the cell pairs
+    
+    pair_dist <- pair_stat_object %>% 
+      subset(track_pair = track_pair) %>% 
+      distance(as_tibble = T)
+    
+    ## plot
+    
+    pair_plot <- pair_dist %>% 
+      ggplot(aes(x = as.numeric(t), 
+                 y = dist, 
+                 color = track_pair)) + 
+      geom_line(aes(group = track_pair, ...))
+    
+    return(pair_plot)
+    
+  }
+  
 # class definition and methods ------
   
   ## class definition
@@ -222,7 +244,7 @@
     
     ## retrieves track pair names from the pair_stat object
     
-    return(x$correlation$track_pair)
+    return(x$distance_stats$track_pair)
     
   }
   
@@ -313,7 +335,8 @@
                              point_shape = 16, 
                              point_color = 'gray40', 
                              scale_x_transf = 'identity', 
-                             scale_y_transf = 'identity', ...) {
+                             scale_y_transf = 'identity', 
+                             track_pair = NULL, ...) {
     
     ## plots the track pair statistics taking a 'pair_stat' object as a compulsory argument
     ## ... are additional arguments passed to the respective geom_*(). 
@@ -327,6 +350,7 @@
     ## mean_distance - distribution of the mean Euclidean distances between the tracks
     ## sd_distance - distribution of the standard deviations of Euclidean distances between the tracks
     ## distance_stats - SD vs mean Euclidean distance
+    ## pair - distance as a function of time for the provided track_pair argument
     
     ## Note: the tracks with low mean distances and low SDs are likely characteristic for the cell doublets
     
@@ -337,7 +361,8 @@
                                         'rho_density', 
                                         'mean_distance', 
                                         'sd_distance', 
-                                        'distance_stats'))
+                                        'distance_stats', 
+                                        'pair'))
     
     pair_plot <- switch(type, 
                         
@@ -431,7 +456,17 @@
                           labs(title = 'SD and mean distance between the tracks', 
                                subtitle = expression('Euclidean distance'), 
                                y = 'SD distance', 
-                               x = 'Mean distance')
+                               x = 'Mean distance'), 
+                        
+                        ## distances for the selected pairs
+                        
+                        'pair' = plot_pair_(pair_stat_object = x, 
+                                            track_pair = track_pair, ...) + 
+                          labs(title = 'Distance between the tracks', 
+                               subtitle = expression('Euclidean distance'), 
+                               y = 'Distance', 
+                               x = 'Time', 
+                               color = 'Track pairs')
                         
                         )
     
@@ -473,7 +508,7 @@
     ## user info
     
     start_time <- Sys.time()
-    message(paste('Checking for duplicates for', 
+    message(paste('Calculating pair stats for', 
                   length(names(track_object)), 
                   ' tracks'))
     on.exit(message(paste('Elapsed:', 
@@ -544,13 +579,26 @@
                             sd_dist_limit, 
                             label_pairs = F) {
     
-    ## retrieves potantial cell doublets from the given 'pair_stat' object by the distance limits provided by the user
+    ## retrieves potential cell doublets from the given 'pair_stat' object by the distance limits provided by the user
+    ## enables labeling of the candidate doublets in the plot
+    
+    ## returns a list with the 'pair_stat' object containing the candidate doublets' data 
+    ## and a diagnostic plot of distance stats with the candidate doublets color-coded
     
     if(class(pair_stat_object) != 'pair_stat') {
       
       stop('The input has to be a pair_stat object')
       
     }
+    
+    ## user info
+    
+    start_time <- Sys.time()
+    message(paste('Checking for doublets for', 
+                  length(pair_stat_object), 
+                  ' track pairs'))
+    on.exit(message(paste('Elapsed:', 
+                          Sys.time() - start_time)))
     
     ## stats
     
@@ -593,8 +641,61 @@
   
 # finding cell:cell associations ------
   
-  ## pending
-
+  pick_clashes <- function(pair_stat_object, 
+                           dist_limit) {
+    
+    ## retrieves potential clashes between two cells by the specified distance limit
+    ## returns a list with a pair_stat object with candidate clash pair data and a diagnostic plot
+    
+    if(class(pair_stat_object) != 'pair_stat') {
+      
+      stop('The input has to be a pair_stat object')
+      
+    }
+    
+    ## user info
+    
+    start_time <- Sys.time()
+    message(paste('Checking for clashes for', 
+                  length(pair_stat_object), 
+                  ' track pairs'))
+    on.exit(message(paste('Elapsed:', 
+                          Sys.time() - start_time)))
+    
+    ## distance retrieval
+    
+    dist_lst <- distance(pair_stat_object, as_tibble = F)
+    
+    ## distance testing
+    
+    cand_pairs <- map(names(dist_lst), 
+                      function(x) if(any(dist_lst[[x]][['dist']] < dist_limit)) x else NULL)
+    
+    cand_pairs <- do.call('c', compact(cand_pairs))
+    
+    ## stats
+    
+    clash_stats <- subset(pair_stat_object, 
+                          track_pair = cand_pairs)
+    
+    ## diagnostic plot
+    
+    clash_plot <- plot(pair_stat_object, 
+                       type = 'pair', 
+                       track_pair = cand_pairs) + 
+      annotate('rect', 
+               xmin = -Inf, 
+               xmax = Inf, 
+               ymin = 0, 
+               ymax = dist_limit, 
+               fill = 'black', 
+               alpha = 0.1)
+    
+    return(list(pair_stat = clash_stats, 
+                plot = clash_plot))
+    
+  }
+  
 # general testing ------
   
   ### loading the tracer objects from a real experiment
@@ -653,7 +754,7 @@
   subset(test_stats, c('1:3', '1:22', '100:1', '5:270'))
 
   
-# testing of identification of the doublets and cell:cell clashes ----  
+# testing of identification of the doublets ----  
   
   candidate_doublets <- pick_doublets(test_stats, 
                                       mean_dist_limit = 150, 
@@ -662,5 +763,19 @@
   
   verified_doublets <- stats(candidate_doublets$pair_stat) %>% 
     filter(track1 %in% possible_dt_1$tracks | track2 %in% possible_dt_1$tracks)
+  
+  verified_doublets_plot <-  candidate_doublets$pair_stat %>% 
+    plot(type = 'pair', 
+         track_pair = verified_doublets$track_pair)
+  
+# testing identification of the clashes -----
 
+  test_clash <- test_stats %>% 
+    pick_clashes(dist_limit = 20)
+  
+  test_clash_plot <- test_clash$pair_stat %>% 
+    filter(sd_dist > 200) %>% 
+    plot(type = 'pair', 
+         track_pair = stats(test_clash$pair_stat)[['track_pair']])
+  
 # END -----
